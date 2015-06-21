@@ -709,7 +709,7 @@ int main(int _argc, const char* _argv[])
 
 	uint32_t glsl  = 0;
 	uint32_t essl  = 0;
-	uint32_t hlsl  = 2;
+	uint32_t hlsl  = 0;
 	uint32_t d3d   = 11;
 	uint32_t metal = 0;
 	const char* profile = cmdLine.findOption('p', "profile");
@@ -845,9 +845,18 @@ int main(int _argc, const char* _argv[])
 	else if (0 == bx::stricmp(platform, "windows") )
 	{
 		preprocessor.setDefine("BX_PLATFORM_WINDOWS=1");
-		char temp[256];
-		bx::snprintf(temp, sizeof(temp), "BGFX_SHADER_LANGUAGE_HLSL=%d", hlsl);
-		preprocessor.setDefine(temp);
+		if (0 < glsl)
+		{
+			preprocessor.setDefine(glslDefine);
+		}
+		else
+		{
+			if (0 == hlsl)
+				hlsl = 2;
+			char temp[256];
+			bx::snprintf(temp, sizeof(temp), "BGFX_SHADER_LANGUAGE_HLSL=%d", hlsl);
+			preprocessor.setDefine(temp);
+		}
 	}
 	else if (0 == bx::stricmp(platform, "xbox360") )
 	{
