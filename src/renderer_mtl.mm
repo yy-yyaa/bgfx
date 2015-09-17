@@ -220,6 +220,7 @@ namespace bgfx { namespace mtl
 		MTLSamplerAddressModeRepeat,
 		MTLSamplerAddressModeMirrorRepeat,
 		MTLSamplerAddressModeClampToEdge,
+		MTLSamplerAddressModeClampToZero,
 	};
 
 	static const MTLSamplerMinMagFilter s_textureFilterMinMag[] =
@@ -264,6 +265,7 @@ namespace bgfx { namespace mtl
 		{ MTLPixelFormatInvalid,          MTLPixelFormatInvalid              }, // PTC24
 		{ MTLPixelFormatInvalid,          MTLPixelFormatInvalid              }, // Unknown
 		{ MTLPixelFormatInvalid,          MTLPixelFormatInvalid              }, // R1
+		{ MTLPixelFormatA8Unorm,          MTLPixelFormatInvalid              }, // A8
 		{ MTLPixelFormatR8Unorm,          MTLPixelFormatR8Unorm_sRGB         }, // R8
 		{ MTLPixelFormatR8Sint,           MTLPixelFormatInvalid              }, // R8I
 		{ MTLPixelFormatR8Uint,           MTLPixelFormatInvalid              }, // R8U
@@ -273,6 +275,7 @@ namespace bgfx { namespace mtl
 		{ MTLPixelFormatR16Uint,          MTLPixelFormatInvalid              }, // R16U
 		{ MTLPixelFormatR16Float,         MTLPixelFormatInvalid              }, // R16F
 		{ MTLPixelFormatR16Snorm,         MTLPixelFormatInvalid              }, // R16S
+		{ MTLPixelFormatR32Sint,          MTLPixelFormatInvalid              }, // R32I
 		{ MTLPixelFormatR32Uint,          MTLPixelFormatInvalid              }, // R32U
 		{ MTLPixelFormatR32Float,         MTLPixelFormatInvalid              }, // R32F
 		{ MTLPixelFormatRG8Unorm,         MTLPixelFormatRG8Unorm_sRGB        }, // RG8
@@ -284,6 +287,7 @@ namespace bgfx { namespace mtl
 		{ MTLPixelFormatRG16Uint,         MTLPixelFormatInvalid              }, // RG16U
 		{ MTLPixelFormatRG16Float,        MTLPixelFormatInvalid              }, // RG16F
 		{ MTLPixelFormatRG16Snorm,        MTLPixelFormatInvalid              }, // RG16S
+		{ MTLPixelFormatRG32Sint,         MTLPixelFormatInvalid              }, // RG32I
 		{ MTLPixelFormatRG32Uint,         MTLPixelFormatInvalid              }, // RG32U
 		{ MTLPixelFormatRG32Float,        MTLPixelFormatInvalid              }, // RG32F
 		{ MTLPixelFormatBGRA8Unorm,       MTLPixelFormatBGRA8Unorm_sRGB      }, // BGRA8
@@ -296,6 +300,7 @@ namespace bgfx { namespace mtl
 		{ MTLPixelFormatRGBA16Uint,       MTLPixelFormatInvalid              }, // RGBA16I
 		{ MTLPixelFormatRGBA16Float,      MTLPixelFormatInvalid              }, // RGBA16F
 		{ MTLPixelFormatRGBA16Snorm,      MTLPixelFormatInvalid              }, // RGBA16S
+		{ MTLPixelFormatRGBA32Sint,       MTLPixelFormatInvalid              }, // RGBA32I
 		{ MTLPixelFormatRGBA32Uint,       MTLPixelFormatInvalid              }, // RGBA32U
 		{ MTLPixelFormatRGBA32Float,      MTLPixelFormatInvalid              }, // RGBA32F
 		{ MTLPixelFormatB5G6R5Unorm,      MTLPixelFormatInvalid              }, // R5G6B5
@@ -840,7 +845,7 @@ namespace bgfx { namespace mtl
 			m_maxAnisotropy = 1;
 		}
 
-		//TODO: _resolution has wrong dimensions, usng m_drawable.texture size now
+		//TODO: _resolution has wrong dimensions, using m_drawable.texture size now
 
 		if ( NULL == m_drawable.texture )
 			return;
@@ -928,13 +933,13 @@ namespace bgfx { namespace mtl
 		setShaderUniform(_flags, _loc, _val, _numRegs);
 	}
 
-	void commit(ConstantBuffer& _constantBuffer)
+	void commit(UniformBuffer& _uniformBuffer)
 	{
-		_constantBuffer.reset();
+		_uniformBuffer.reset();
 
 		for (;;)
 		{
-			uint32_t opcode = _constantBuffer.read();
+			uint32_t opcode = _uniformBuffer.read();
 
 			if (UniformType::End == opcode)
 			{
@@ -945,17 +950,17 @@ namespace bgfx { namespace mtl
 			uint16_t loc;
 			uint16_t num;
 			uint16_t copy;
-			ConstantBuffer::decodeOpcode(opcode, type, loc, num, copy);
+			UniformBuffer::decodeOpcode(opcode, type, loc, num, copy);
 
 			const char* data;
 			if (copy)
 			{
-				data = _constantBuffer.read(g_uniformTypeSize[type]*num);
+				data = _uniformBuffer.read(g_uniformTypeSize[type]*num);
 			}
 			else
 			{
 				UniformHandle handle;
-				memcpy(&handle, _constantBuffer.read(sizeof(UniformHandle) ), sizeof(UniformHandle) );
+				memcpy(&handle, _uniformBuffer.read(sizeof(UniformHandle) ), sizeof(UniformHandle) );
 				data = (const char*)m_uniforms[handle.idx];
 			}
 
@@ -1001,7 +1006,7 @@ namespace bgfx { namespace mtl
 					break;
 
 				default:
-					BX_TRACE("%4d: INVALID 0x%08x, t %d, l %d, n %d, c %d", _constantBuffer.getPos(), opcode, type, loc, num, copy);
+					BX_TRACE("%4d: INVALID 0x%08x, t %d, l %d, n %d, c %d", _uniformBuffer.getPos(), opcode, type, loc, num, copy);
 					break;
 			}
 
@@ -1372,13 +1377,13 @@ namespace bgfx { namespace mtl
 
 		if (NULL != m_vshConstantBuffer)
 		{
-			ConstantBuffer::destroy(m_vshConstantBuffer);
+			UniformBuffer::destroy(m_vshConstantBuffer);
 			m_vshConstantBuffer = NULL;
 		}
 
 		if (NULL != m_fshConstantBuffer)
 		{
-			ConstantBuffer::destroy(m_fshConstantBuffer);
+			UniformBuffer::destroy(m_fshConstantBuffer);
 			m_fshConstantBuffer = NULL;
 		}
 
@@ -1602,7 +1607,7 @@ namespace bgfx { namespace mtl
 				{
 					for( int type =0; type<2; ++type)
 					{
-						ConstantBuffer*& constantBuffer = (type==0?m_vshConstantBuffer : m_fshConstantBuffer);
+						UniformBuffer*& constantBuffer = (type==0?m_vshConstantBuffer : m_fshConstantBuffer);
 						uint8_t fragmentBit = (1 == type ? BGFX_UNIFORM_FRAGMENTBIT : 0);
 
 						for( MTLArgument* arg in (type==0?reflection.vertexArguments:reflection.fragmentArguments))
@@ -1672,7 +1677,7 @@ namespace bgfx { namespace mtl
 												{
 													if (NULL == constantBuffer)
 													{
-														constantBuffer = ConstantBuffer::create(1024);
+														constantBuffer = UniformBuffer::create(1024);
 													}
 
 													UniformType::Enum type = convertMtlType(dataType);
@@ -2381,8 +2386,8 @@ namespace bgfx { namespace mtl
 				}
 
 				bool programChanged = false;
-				bool constantsChanged = draw.m_constBegin < draw.m_constEnd;
-				rendererUpdateUniforms(this, _render->m_constantBuffer, draw.m_constBegin, draw.m_constEnd);
+				bool constantsChanged = draw.m_uniformBegin < draw.m_uniformEnd;
+				rendererUpdateUniforms(this, _render->m_uniformBuffer, draw.m_uniformBegin, draw.m_uniformEnd);
 
 				if (key.m_program != programIdx ||
 					(BGFX_STATE_BLEND_MASK|BGFX_STATE_BLEND_EQUATION_MASK|BGFX_STATE_ALPHA_WRITE|BGFX_STATE_RGB_WRITE|BGFX_STATE_BLEND_INDEPENDENT|BGFX_STATE_MSAA) & changedFlags ||
@@ -2449,13 +2454,13 @@ namespace bgfx { namespace mtl
 
 					if (constantsChanged)
 					{
-						ConstantBuffer* vcb = program.m_vshConstantBuffer;
+						UniformBuffer* vcb = program.m_vshConstantBuffer;
 						if (NULL != vcb)
 						{
 							commit(*vcb);
 						}
 
-						ConstantBuffer* fcb = program.m_fshConstantBuffer;
+						UniformBuffer* fcb = program.m_fshConstantBuffer;
 						if (NULL != fcb)
 						{
 							commit(*fcb);
@@ -2705,9 +2710,10 @@ namespace bgfx { namespace mtl
 					   );
 				}
 
-				tvm.printf(10, pos++, 0x8e, "     Indices: %7d", statsNumIndices);
-				tvm.printf(10, pos++, 0x8e, "    DVB size: %7d", _render->m_vboffset);
-				tvm.printf(10, pos++, 0x8e, "    DIB size: %7d", _render->m_iboffset);
+				tvm.printf(10, pos++, 0x8e, "      Indices: %7d ", statsNumIndices);
+				tvm.printf(10, pos++, 0x8e, " Uniform size: %7d, Max: %7d ", _render->m_uniformEnd, _render->m_uniformMax);
+				tvm.printf(10, pos++, 0x8e, "     DVB size: %7d ", _render->m_vboffset);
+				tvm.printf(10, pos++, 0x8e, "     DIB size: %7d ", _render->m_iboffset);
 
 				double captureMs = double(captureElapsed)*toMs;
 				tvm.printf(10, pos++, 0x8e, "     Capture: %3.4f [ms]", captureMs);

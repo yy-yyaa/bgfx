@@ -97,7 +97,6 @@ namespace bgfx
 #include <bx/debug.h>
 #include <bx/fpumath.h>
 #include <bx/float4x4_t.h>
-#include <bx/blockalloc.h>
 #include <bx/endian.h>
 #include <bx/handlealloc.h>
 #include <bx/hash.h>
@@ -859,21 +858,34 @@ namespace bgfx
 #define CONSTANT_OPCODE_COPY_MASK  UINT32_C(0x00000001)
 
 #define BGFX_UNIFORM_FRAGMENTBIT UINT8_C(0x10)
+#define BGFX_UNIFORM_SAMPLERBIT  UINT8_C(0x20)
+#define BGFX_UNIFORM_MASK (BGFX_UNIFORM_FRAGMENTBIT|BGFX_UNIFORM_SAMPLERBIT)
 
-	class ConstantBuffer
+	class UniformBuffer
 	{
 	public:
-		static ConstantBuffer* create(uint32_t _size)
+		static UniformBuffer* create(uint32_t _size = 1<<20)
 		{
-			uint32_t size = BX_ALIGN_16(bx::uint32_max(_size, sizeof(ConstantBuffer) ) );
-			void* data = BX_ALLOC(g_allocator, size);
-			return ::new(data) ConstantBuffer(_size);
+			uint32_t size = BX_ALIGN_16(bx::uint32_max(_size, sizeof(UniformBuffer) ) );
+			void*    data = BX_ALLOC(g_allocator, size);
+			return ::new(data) UniformBuffer(_size);
 		}
 
-		static void destroy(ConstantBuffer* _constantBuffer)
+		static void destroy(UniformBuffer* _uniformBuffer)
 		{
-			_constantBuffer->~ConstantBuffer();
-			BX_FREE(g_allocator, _constantBuffer);
+			_uniformBuffer->~UniformBuffer();
+			BX_FREE(g_allocator, _uniformBuffer);
+		}
+
+		static void update(UniformBuffer*& _uniformBuffer, uint32_t _treshold = 64<<10, uint32_t _grow = 1<<20)
+		{
+			if (_treshold >= _uniformBuffer->m_size - _uniformBuffer->m_pos)
+			{
+				uint32_t size = BX_ALIGN_16(bx::uint32_max(_uniformBuffer->m_size + _grow, sizeof(UniformBuffer) ) );
+				void*    data = BX_REALLOC(g_allocator, _uniformBuffer, size);
+				_uniformBuffer = reinterpret_cast<UniformBuffer*>(data);
+				_uniformBuffer->m_size = size;
+			}
 		}
 
 		static uint32_t encodeOpcode(UniformType::Enum _type, uint16_t _loc, uint16_t _num, uint16_t _copy)
@@ -955,14 +967,14 @@ namespace bgfx
 		void writeMarker(const char* _marker);
 
 	private:
-		ConstantBuffer(uint32_t _size)
+		UniformBuffer(uint32_t _size)
 			: m_size(_size-sizeof(m_buffer) )
 			, m_pos(0)
 		{
 			finish();
 		}
 
-		~ConstantBuffer()
+		~UniformBuffer()
 		{
 		}
 
@@ -971,12 +983,9 @@ namespace bgfx
 		char m_buffer[8];
 	};
 
-	typedef const void* (*UniformFn)(const void* _data);
-
 	struct UniformInfo
 	{
 		const void* m_data;
-		UniformFn m_func;
 		UniformHandle m_handle;
 	};
 
@@ -1002,14 +1011,13 @@ namespace bgfx
  			return NULL;
  		}
 
-		const UniformInfo& add(UniformHandle _handle, const char* _name, const void* _data, UniformFn _func = NULL)
+		const UniformInfo& add(UniformHandle _handle, const char* _name, const void* _data)
 		{
 			UniformHashMap::iterator it = m_uniforms.find(_name);
 			if (it == m_uniforms.end() )
 			{
 				UniformInfo info;
 				info.m_data   = _data;
-				info.m_func   = _func;
 				info.m_handle = _handle;
 
 				stl::pair<UniformHashMap::iterator, bool> result = m_uniforms.insert(UniformHashMap::value_type(_name, info) );
@@ -1018,7 +1026,6 @@ namespace bgfx
 
 			UniformInfo& info = it->second;
 			info.m_data   = _data;
-			info.m_func   = _func;
 			info.m_handle = _handle;
 
 			return info;
@@ -1091,7 +1098,10 @@ namespace bgfx
 
 			for (uint32_t ii = 0; ii < BGFX_CONFIG_MAX_TEXTURE_SAMPLERS; ++ii)
 			{
-				m_bind[ii].m_idx  = invalidHandle;
+				Binding& bind = m_bind[ii];
+				bind.m_idx  = invalidHandle;
+				bind.m_type = 0;
+				bind.m_un.m_draw.m_flags = 0;
 			}
 		}
 
@@ -1209,9 +1219,10 @@ namespace bgfx
 	BX_ALIGN_DECL_CACHE_LINE(struct) Frame
 	{
 		Frame()
-			: m_hmdInitialized(false)
+			: m_uniformMax(0)
 			, m_waitSubmit(0)
 			, m_waitRender(0)
+			, m_hmdInitialized(false)
 		{
 			SortKey term;
 			term.reset();
@@ -1226,7 +1237,7 @@ namespace bgfx
 
 		void create()
 		{
-			m_constantBuffer = ConstantBuffer::create(BGFX_CONFIG_MAX_CONSTANT_BUFFER_SIZE);
+			m_uniformBuffer = UniformBuffer::create();
 			reset();
 			start();
 			m_textVideoMem = BX_NEW(g_allocator, TextVideoMem);
@@ -1234,7 +1245,7 @@ namespace bgfx
 
 		void destroy()
 		{
-			ConstantBuffer::destroy(m_constantBuffer);
+			UniformBuffer::destroy(m_uniformBuffer);
 			BX_DELETE(g_allocator, m_textVideoMem);
 		}
 
@@ -1248,8 +1259,8 @@ namespace bgfx
 		void start()
 		{
 			m_flags = BGFX_STATE_NONE;
-			m_constBegin = 0;
-			m_constEnd   = 0;
+			m_uniformBegin = 0;
+			m_uniformEnd   = 0;
 			m_draw.clear();
 			m_compute.clear();
 			m_matrixCache.reset();
@@ -1262,7 +1273,7 @@ namespace bgfx
 			m_vboffset = 0;
 			m_cmdPre.start();
 			m_cmdPost.start();
-			m_constantBuffer->reset();
+			m_uniformBuffer->reset();
 			m_discard = false;
 		}
 
@@ -1271,7 +1282,8 @@ namespace bgfx
 			m_cmdPre.finish();
 			m_cmdPost.finish();
 
-			m_constantBuffer->finish();
+			m_uniformMax = bx::uint32_max(m_uniformMax, m_uniformBuffer->getPos() );
+			m_uniformBuffer->finish();
 
 			if (0 < m_numDropped)
 			{
@@ -1285,7 +1297,7 @@ namespace bgfx
 
 		void setMarker(const char* _name)
 		{
-			m_constantBuffer->writeMarker(_name);
+			m_uniformBuffer->writeMarker(_name);
 		}
 
 		void setState(uint64_t _state, uint32_t _rgba)
@@ -1404,7 +1416,7 @@ namespace bgfx
 		{
 			Binding& bind = m_draw.m_bind[_stage];
 			bind.m_idx    = _handle.idx;
-			bind.m_type   = Binding::Texture;
+			bind.m_type   = uint8_t(Binding::Texture);
 			bind.m_un.m_draw.m_flags = (_flags&BGFX_SAMPLER_DEFAULT_FLAGS)
 				? BGFX_SAMPLER_DEFAULT_FLAGS
 				: _flags
@@ -1521,7 +1533,8 @@ namespace bgfx
 
 		void writeUniform(UniformType::Enum _type, UniformHandle _handle, const void* _value, uint16_t _num)
 		{
-			m_constantBuffer->writeUniform(_type, _handle.idx, _value, _num);
+			UniformBuffer::update(m_uniformBuffer);
+			m_uniformBuffer->writeUniform(_type, _handle.idx, _value, _num);
 		}
 
 		void free(IndexBufferHandle _handle)
@@ -1589,7 +1602,7 @@ namespace bgfx
 		uint8_t m_viewRemap[BGFX_CONFIG_MAX_VIEWS];
 		FrameBufferHandle m_fb[BGFX_CONFIG_MAX_VIEWS];
 		Clear m_clear[BGFX_CONFIG_MAX_VIEWS];
-		float m_clearColor[BGFX_CONFIG_MAX_CLEAR_COLOR_PALETTE][4];
+		float m_colorPalette[BGFX_CONFIG_MAX_COLOR_PALETTE][4];
 		Rect m_rect[BGFX_CONFIG_MAX_VIEWS];
 		Rect m_scissor[BGFX_CONFIG_MAX_VIEWS];
 		Matrix4 m_view[BGFX_CONFIG_MAX_VIEWS];
@@ -1602,10 +1615,11 @@ namespace bgfx
 		RenderDraw m_draw;
 		RenderCompute m_compute;
 		uint64_t m_flags;
-		uint32_t m_constBegin;
-		uint32_t m_constEnd;
+		uint32_t m_uniformBegin;
+		uint32_t m_uniformEnd;
+		uint32_t m_uniformMax;
 
-		ConstantBuffer* m_constantBuffer;
+		UniformBuffer* m_uniformBuffer;
 
 		RenderItemCount m_num;
 		RenderItemCount m_numRenderItems;
@@ -1646,11 +1660,11 @@ namespace bgfx
 		TextVideoMem* m_textVideoMem;
 		HMD m_hmd;
 		Stats m_perfStats;
-		bool m_hmdInitialized;
 
 		int64_t m_waitSubmit;
 		int64_t m_waitRender;
 
+		bool m_hmdInitialized;
 		bool m_discard;
 	};
 
@@ -1888,7 +1902,7 @@ namespace bgfx
 	{
 	}
 
-	void rendererUpdateUniforms(RendererContextI* _renderCtx, ConstantBuffer* _constantBuffer, uint32_t _begin, uint32_t _end);
+	void rendererUpdateUniforms(RendererContextI* _renderCtx, UniformBuffer* _uniformBuffer, uint32_t _begin, uint32_t _end);
 
 #if BGFX_CONFIG_DEBUG
 #	define BGFX_API_FUNC(_func) BX_NO_INLINE _func
@@ -2618,7 +2632,7 @@ namespace bgfx
 
 					uint8_t type;
 					bx::read(&reader, type);
-					type &= ~BGFX_UNIFORM_FRAGMENTBIT;
+					type &= ~BGFX_UNIFORM_MASK;
 
 					uint8_t num;
 					bx::read(&reader, num);
@@ -3165,11 +3179,11 @@ namespace bgfx
 			cmdbuf.write(_filePath, len);
 		}
 
-		BGFX_API_FUNC(void setClearColor(uint8_t _index, const float _rgba[4]) )
+		BGFX_API_FUNC(void setPaletteColor(uint8_t _index, const float _rgba[4]) )
 		{
-			BX_CHECK(_index < BGFX_CONFIG_MAX_CLEAR_COLOR_PALETTE, "Clear color palette index out of bounds %d (max: %d)."
+			BX_CHECK(_index < BGFX_CONFIG_MAX_COLOR_PALETTE, "Color palette index out of bounds %d (max: %d)."
 				, _index
-				, BGFX_CONFIG_MAX_CLEAR_COLOR_PALETTE
+				, BGFX_CONFIG_MAX_COLOR_PALETTE
 				);
 			memcpy(&m_clearColor[_index][0], _rgba, 16);
 			m_clearColorDirty = 2;
@@ -3670,7 +3684,7 @@ namespace bgfx
 		FrameBufferHandle m_fb[BGFX_CONFIG_MAX_VIEWS];
 		Clear m_clear[BGFX_CONFIG_MAX_VIEWS];
 
-		float m_clearColor[BGFX_CONFIG_MAX_CLEAR_COLOR_PALETTE][4];
+		float m_clearColor[BGFX_CONFIG_MAX_COLOR_PALETTE][4];
 		Rect m_rect[BGFX_CONFIG_MAX_VIEWS];
 		Rect m_scissor[BGFX_CONFIG_MAX_VIEWS];
 		Matrix4 m_view[BGFX_CONFIG_MAX_VIEWS];

@@ -1666,7 +1666,8 @@ int main(int _argc, const char* _argv[])
 						}
 
 						if (0 != glsl
-						||  0 != essl)
+						||  0 != essl
+						||  0 != metal)
 						{
 							std::string code;
 
@@ -1674,7 +1675,14 @@ int main(int _argc, const char* _argv[])
 
 							if (0 == essl)
 							{
-								bx::stringPrintf(code, "#version %s\n", profile);
+								if (0 != metal)
+								{
+									bx::stringPrintf(code, "#version 120\n");
+								}
+								else
+								{
+									bx::stringPrintf(code, "#version %s\n", profile);
+								}
 
 								bx::stringPrintf(code
 									, "#define bgfxShadow2D shadow2D\n"
@@ -1736,16 +1744,8 @@ int main(int _argc, const char* _argv[])
 
 							code += preprocessor.m_preprocessed;
 							compiled = compileGLSLShader(cmdLine
-									, essl
+									, metal ? BX_MAKEFOURCC('M', 'T', 'L', 0) : essl
 									, code
-									, writer
-									);
-						}
-						else if (0 != metal)
-						{
-							compiled = compileGLSLShader(cmdLine
-									, BX_MAKEFOURCC('M', 'T', 'L', 0)
-									, preprocessor.m_preprocessed
 									, writer
 									);
 						}
